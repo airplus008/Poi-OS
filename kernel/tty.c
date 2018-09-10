@@ -84,19 +84,26 @@ PUBLIC void in_process(TTY* p_tty, u32 key)
 	reset_msg(&msg);
 	//msg.source = TASK_TTY;
         if (!(key & FLAG_EXT)) {
-			strcatch(p_tty->currentInput,&key);
+			// strcatch(p_tty->currentInput,&key);
 			put_key(p_tty, key);
         }
         else {
                 int raw_code = key & MASK_RAW;
                 switch(raw_code) {
                 case ENTER:
-					put_key(p_tty, '\n');
+					// out_char(p_tty->p_console, '0');
 					msg.INSSM = p_tty->currentInput;
 					msg.INTTY = p_tty;
+
+					// out_char(p_tty->p_console, '&');
+
 					send_recv(SEND,TASK_SHELL,&msg);
 					reset_msg(&msg);
+					// out_char(p_tty->p_console,'%');
 					send_recv(RECEIVE,TASK_SHELL,&msg);
+
+					// out_char(p_tty->p_console, '$');
+
 					if(msg.type == TTY_DO_CLEAR)
 						clear_screen(p_tty->p_console);
 					if(msg.type == TTY_DO_INDEX)
@@ -187,6 +194,8 @@ PRIVATE void tty_do_write(TTY* p_tty)
 		}
 		p_tty->inbuf_count--;
 
+		if(ch != '\n' && ch != '\b')
+			strcatch(p_tty->currentInput,&ch);
 		out_char(p_tty->p_console, ch);
 	}
 }

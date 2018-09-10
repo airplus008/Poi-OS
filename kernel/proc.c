@@ -14,12 +14,19 @@
 #include "proc.h"
 #include "global.h"
 #include "proto.h"
+#include "schedule_queue.h"
+
+#define OUT_QUEUE -100
 
 PRIVATE void block(struct proc* p);
 PRIVATE void unblock(struct proc* p);
 PRIVATE int  msg_send(struct proc* current, int dest, MESSAGE* m);
 PRIVATE int  msg_receive(struct proc* current, int src, MESSAGE* m);
 PRIVATE int  deadlock(int src, int dest);
+
+PRIVATE int proc_status_before[NR_TASKS+NR_PROCS];
+PRIVATE int proc_status_current[NR_TASKS+NR_PROCS];
+PUBLIC int block_schedule = 0;
 
 /*****************************************************************************
  *                                schedule
@@ -28,7 +35,545 @@ PRIVATE int  deadlock(int src, int dest);
  * <Ring 0> Choose one proc to run.
  * 
  *****************************************************************************/
-PUBLIC void schedule()
+
+PUBLIC struct proc* get_last_proc(struct proc* head)
+{
+	struct proc* current = head;
+	if(head == NULL){
+		return NULL;
+	}
+
+	while(current->next_proc != NULL){
+		current++;
+		if(current->next_proc == NULL){
+			return current;
+		}
+	}
+	return current;
+}
+
+PUBLIC void add_to_queue(struct proc* current, struct Queue* queue){
+	struct proc* p = get_last_proc(queue->linked_PCB);
+
+	if(p == NULL){
+		queue->linked_PCB = current;
+	} else {
+		p->next_proc = current;
+	}
+
+	// for(p = &FIRST_PROC; p <= &LAST_PROC; p++){
+	// 	printf("    %s   XXXXXXXXXXXXX", p->name);
+	// }
+
+	current->already_run_for = 0;			
+	current->next_proc = NULL;
+}
+
+PUBLIC void init_schedule_queue()
+{
+	Queue1.next = &Queue2;	//将3个队列连接起来
+	Queue2.next = &Queue3;
+	Queue3.next = NULL;
+
+	Queue1.prio = 8;		//设定每个队列的时间片
+	Queue2.prio = 16;
+	Queue3.prio = 32;
+
+	Queue1.linked_PCB = Queue2.linked_PCB = Queue3.linked_PCB = NULL;
+
+	int i = 0;
+	for(i = 0; i < NR_PROCS + NR_TASKS; i++){
+		// proc_table[i].ticks = proc_table[i].priority;
+		proc_table[i].next_proc = NULL;
+		proc_table[i].already_run_for = 0;
+
+		proc_status_current[i] = proc_table[i].p_flags;
+		proc_status_before[i] = 0;
+		if(proc_table[i].p_flags == 0){		//当前进程未被阻塞，将其加入Queue1
+			add_to_queue(&proc_table[i], &Queue1);
+		}
+	}
+}
+
+PUBLIC void mqs_schedule()
+{
+
+	struct proc*	p;
+	int		greatest_ticks = 0;
+	int flags = 0;
+	//分别处理三个队列
+	//任务队列
+	for(int i=0;i < NR_TASKS;i++)
+	{
+		if(proc_table[i].p_flags != 0 && task_queue[i] != OUT_QUEUE)
+		//移出队列
+		{
+			for(int j=0;j<NR_TASKS + NR_PROCS;j++)
+			{
+				if(task_queue[j] == i)
+				{
+					task_queue[j] = task_queue[i];
+					if(ifDebug == 1)
+					{
+						print_color_str(&(console_table[0]),"REMOVE:",YELLOW_CHAR);
+						out_char(&(console_table[0]),'0' + i);
+						print_color_str(&(console_table[0]),"FROM:",RED_CHAR);
+						out_char(&(console_table[0]),'0' + j);
+					}
+					
+					break;
+				}
+			}
+			task_queue[i] = OUT_QUEUE;
+			
+		}
+		if(proc_table[i].p_flags == 0 && task_queue[i] < 0)
+		//加入队列
+		{
+			for(int j=0;j<NR_TASKS + NR_PROCS;j++)
+			{
+				if(task_queue[j] != OUT_QUEUE)
+				{
+					task_queue[i] = task_queue[j];
+					flags = 1;
+					task_queue[j] = i;
+					break;
+				}
+			}
+			if(!flags)
+				task_queue[i] = 0;
+			flags = 0;
+			if(ifDebug == 1)
+			{
+				print_color_str(&(console_table[0]),"ADD:",BLUE_CHAR);
+				out_char(&(console_table[0]),'0' + i);
+			}
+				
+		}
+	}
+	//队列2,队列2目前固定只有一个进程
+	if(proc_table[NR_TASKS].p_flags != 0)
+	{
+		proc_queueA[NR_TASKS] = OUT_QUEUE;
+		if(fcfsHead == NR_TASKS)
+			fcfsHead = proc_queueA[NR_TASKS];
+	}	
+	if(proc_table[NR_TASKS].p_flags == 0)
+		proc_queueA[NR_TASKS] = 0;
+	//队列3
+	for (int i = NR_TASKS+1;i<NR_TASKS + NR_PROCS;i++) 
+	{
+		if(proc_table[i].p_flags != 0 && proc_queueB[i] != OUT_QUEUE)
+		//移出队列
+		{
+			/*for(int j=0;j<NR_TASKS + NR_PROCS;j++)
+			{
+				if(proc_queueB[j] == i)
+				{
+					proc_queueB[j] = proc_queueB[i];
+					if(ifDebug == 1)
+					{
+						print_color_str(&(console_table[0]),"REMOVE:",YELLOW_CHAR);
+						out_char(&(console_table[0]),'0' + i);
+						print_color_str(&(console_table[0]),"FROM:",RED_CHAR);
+						out_char(&(console_table[0]),'0' + j);
+					}
+					break;
+				}
+			}
+			proc_queueB[i] = OUT_QUEUE;*/
+			if(fcfsHead == i)//在队头的情况
+			{
+				fcfsHead = proc_queueB[i];
+				// print_color_str(&(console_table[0]),"!!| ",RED_CHAR);
+				// out_char(&(console_table[0]),'0' + fcfsHead);
+				proc_queueB[i] = OUT_QUEUE;
+			}
+			else
+			{
+				//在队尾或队中的情况
+				for(int j=NR_TASKS;j<NR_TASKS + NR_PROCS;j++)
+				{
+					if(proc_queueB[j] == i)
+					{					
+						proc_queueB[j] = proc_queueB[i];
+						if(fcfsTail == i)
+							fcfsTail = j;
+						proc_queueB[i] = OUT_QUEUE;
+						break;
+					}else if(j == NR_TASKS + NR_PROCS -1)
+					{
+						//最后一个进程被移除
+						fcfsHead = fcfsTail = OUT_QUEUE;
+						proc_queueB[i] = OUT_QUEUE;
+					}
+				}
+				
+			}
+			
+		}
+		if(proc_table[i].p_flags == 0 && proc_queueB[i] == OUT_QUEUE)
+		//加入队列
+		{
+			/*for(int j=NR_TASKS;j<NR_TASKS + NR_PROCS;j++)
+			{
+				if(proc_queueB[j] != OUT_QUEUE)
+				{
+					proc_queueB[i] = proc_queueB[j];
+					proc_queueB[j] = i;
+					flags = 1;
+					break;
+				}
+			}
+			//当前队列唯一进程
+			if(!flags)
+				proc_queueB[i] = 1;
+			if(ifDebug == 1)
+			{
+				print_color_str(&(console_table[0]),"ADD:",BLUE_CHAR);
+				out_char(&(console_table[0]),'0' + i);
+			}*/
+			if(fcfsTail != OUT_QUEUE)
+			{
+				proc_queueB[fcfsTail] = i;
+				fcfsTail = i;
+			}
+			else
+			{
+				fcfsHead = fcfsTail = OUT_QUEUE;
+			}
+		}
+	}
+
+	// for(int i=0;i<NR_TASKS + NR_PROCS;i++)
+	// {
+	// 	if((proc_queueB[i] != OUT_QUEUE && proc_table[i].p_flags != 0) || proc_queueB[i] >= NR_TASKS + NR_PROCS)
+	// 	{
+	// 		print_color_str(&(console_table[0]),"WARNING:",YELLOW_CHAR);
+	// 		out_char(&(console_table[0]),'0' + i);
+	// 	}
+	// }
+	// while (!greatest_ticks) {
+	// 	for (p = &FIRST_PROC; p <= &LAST_PROC; p++) {
+	// 		if (p->p_flags == 0) {
+	// 			if (p->ticks > greatest_ticks) {
+	// 				greatest_ticks = p->ticks;
+	// 				p_proc_ready = p;
+	// 			}
+	// 		}
+	// 	}
+
+	// 	if (!greatest_ticks)
+	// 		for (p = &FIRST_PROC; p <= &LAST_PROC; p++)
+	// 			if (p->p_flags == 0)
+	// 				p->ticks = p->priority;
+	// }
+	// int k;
+	// while(!greatest_ticks)
+	// {
+	// 	for(int i=0;i<NR_TASKS + NR_PROCS;i++)
+	// 	{
+	// 		if(proc_queue[i] != OUT_QUEUE)
+	// 		{
+	// 			k = i;
+	// 			break;
+	// 		}
+	// 	}
+	// 	for(int i=k;i<9 && proc_queue[i] != OUT_QUEUE;i = proc_queue[i])
+	// 	{
+	// 		if(proc_table[i].ticks > greatest_ticks)
+	// 		{
+	// 			greatest_ticks = proc_table[i].ticks;
+	// 			p_proc_ready = &(proc_table[i]);
+	// 		}
+	// 		if(proc_table[i].p_flags != 0)
+	// 			print_color_str(&(console_table[0]),"WARNING:",YELLOW_CHAR);
+	// 	}
+
+	// 	if(!greatest_ticks)
+	// 	{
+	// 		for(int i=0;i<NR_TASKS + NR_PROCS;i++)
+	// 		{
+	// 			if(proc_queue[i] != OUT_QUEUE)
+	// 			{
+	// 				k = i;
+	// 				break;
+	// 			}
+	// 		}
+	// 		for(int i=k;i<9 && proc_queue[i] != OUT_QUEUE;i = proc_queue[i])
+	// 			proc_table[i].ticks = proc_table[i].priority;
+	// 	}
+	// }
+	int i;
+	while (!greatest_ticks) {
+		for (i=0,p = &FIRST_PROC; p <= &LAST_PROC && i<NR_TASKS + NR_PROCS; p++,i++) {
+			if((i<NR_TASKS && task_queue[i] == OUT_QUEUE) || (i == NR_TASKS && proc_queueA[i] == OUT_QUEUE) 
+				|| (i>NR_TASKS && proc_queueB[i] == OUT_QUEUE) )
+				continue;
+			if (p->p_flags == 0) {
+				if (p->ticks > greatest_ticks && i<NR_TASKS) {
+					greatest_ticks = p->ticks;
+					p_proc_ready = p;
+				}
+				if(i<NR_TASKS && greatest_ticks > 0)
+					break;
+				// print_color_str(&(console_table[0]),"ffSuccess",GREEN_CHAR);
+				//进入非任务队列时间
+				//非任务队列采用FCFS
+				//A队列分给应有时间
+				if(i >= NR_TASKS && i<NR_TASKS + NR_APROCQUEUE && changeProAFlag == 0) 
+				{
+					greatest_ticks = p->ticks;
+					p_proc_ready = p;
+					changeProAFlag =1;
+				}
+				//B队列分给应有时间
+				else if(fcfsHead == i && p->ticks != 0 && changeProBFlag == 0)
+				{
+					greatest_ticks = p->ticks;
+					p_proc_ready = p;
+					changeProBFlag = 1;
+				}
+			}
+			else
+			{
+				print_color_str(&(console_table[0]),"WARNING:",YELLOW_CHAR);
+				out_char(&(console_table[0]),'0' + i);
+			}
+		}
+		if (!greatest_ticks && i>=NR_TASKS)
+		{
+			for (p = &FIRST_PROC; p <= &LAST_PROC; p++)
+				if (p->p_flags == 0)
+					p->ticks = p->priority;
+			changeProAFlag = changeProBFlag = 0;
+		}
+			
+	}
+
+
+
+}
+
+PUBLIC void mrc_schedule()
+  {
+  struct proc* current = Queue1.linked_PCB;
+	struct proc* p_temp = p_proc_ready;
+	int done = False;
+	int i = 0;
+	int j = 0;
+
+	int is_head = True;
+	struct proc* p;
+
+	for(i = 0; i < NR_PROCS + NR_TASKS; i++){
+		proc_status_current[i] = proc_table[i].p_flags;								//填充当前进程状态表
+
+		if((proc_status_before[i] != 0) && (proc_status_current[i] == 0)){			//有进程刚刚就绪……	
+			add_to_queue(&proc_table[i], &Queue1);
+			proc_status_before[i] = 0;
+			proc_table[i].ticks = proc_table[i].priority;								//将其加入Q1
+		} else if ((proc_status_before[i] == 0) && (proc_status_current[i] != 0)){		//有进程刚刚被阻塞
+			struct proc* p_left = NULL;
+			struct proc* p_right = proc_table[i].next_proc;
+			
+			proc_status_before[i] = 1;
+
+			int faded = True;
+			if(Queue1.linked_PCB == &proc_table[i]){
+				Queue1.linked_PCB = p_right;
+				faded = False;
+
+			}else if(Queue2.linked_PCB == &proc_table[i]){
+				Queue2.linked_PCB = p_right;
+				faded = False;
+
+			}else if(Queue3.linked_PCB == &proc_table[i]){
+				Queue3.linked_PCB = p_right;
+				faded = False;
+
+			}else{			
+				for(j = 0; j < NR_PROCS + NR_TASKS; j++){								//找到该进程之前的进程
+					if(proc_table[j].next_proc == &proc_table[i]){
+						p_left = &proc_table[j];
+						faded = False;
+						break;
+					}
+				}
+				p_left->next_proc = p_right;			//将其从队列中移除
+			}		
+
+			// assert(faded == False);
+			proc_table[i].already_run_for = 0;
+			proc_table[i].next_proc = NULL;
+			proc_table[i].ticks = proc_table[i].priority;
+		}
+	}
+
+	for(p = Queue1.linked_PCB; p != NULL; p = p->next_proc){
+		assert(p->p_flags == 0);
+	}
+	for(p = Queue2.linked_PCB; p != NULL; p = p->next_proc){
+		// assert(p->p_flags == 0);
+	}
+	for(p = Queue3.linked_PCB; p != NULL; p = p->next_proc){
+		assert(p->p_flags == 0);
+	}
+
+	current = Queue1.linked_PCB;
+	if(current != NULL){
+		if(current->already_run_for >= Queue1.prio){	//如果Q1的第一个进程时间片已到……
+			if(current->next_proc != NULL){				//且有下一个进程的话
+				Queue1.linked_PCB = current->next_proc;
+				p_proc_ready = current->next_proc;
+				// assert(p_proc_ready->p_flags == 0);
+
+				add_to_queue(current, &Queue3);			//将该进程加入Q2
+				// assert(current->p_flags == 0);
+				done = True;
+			} else {
+				add_to_queue(current, &Queue3);			//将该进程加入Q2
+				// assert(current->p_flags == 0);
+				done = False;
+			}
+		} else {
+			if(current->ticks <= 0){					//该进程已经运行完成
+				if(current->next_proc != NULL){			//该进程在队列中还有后续进程
+					Queue1.linked_PCB = current->next_proc;
+					current->already_run_for = 0;					//重设该进程的时间片
+					current->next_proc = NULL;
+
+					p_proc_ready = Queue1.linked_PCB;
+					// assert(p_proc_ready->p_flags == 0);
+					done = True;
+				} else {
+					current = NULL;						
+					done = False;
+				}
+				
+			} else {
+				p_proc_ready = current;
+				// assert(p_proc_ready->p_flags == 0);
+				done = True;
+			}
+		}
+	}
+
+	if((done == False) && (Queue2.linked_PCB != NULL)){
+		current = Queue2.linked_PCB;
+
+		if(current->already_run_for >= Queue2.prio){	//如果Q2的第一个进程时间片已到……
+			if(current->next_proc != NULL){				//且有下一个进程的话
+				Queue2.linked_PCB = current->next_proc;
+				p_proc_ready = current->next_proc;
+				// assert(p_proc_ready->p_flags == 0);
+
+				add_to_queue(current, &Queue3);			//将该进程加入Q3
+				// assert(current->p_flags == 0);
+				done = True;
+			} else {
+				add_to_queue(current, &Queue3);			//将该进程加入Q3
+				// assert(current->p_flags == 0);
+			}
+		} else {
+			if(current->ticks <= 0){					//该进程已经运行完成
+				if(current->next_proc != NULL){			//该进程在队列中还有后续进程
+					Queue2.linked_PCB = current->next_proc;
+					current->already_run_for = 0;			//重设该进程的时间片
+					current->next_proc = NULL;
+
+					p_proc_ready = Queue2.linked_PCB;
+					// assert(p_proc_ready->p_flags == 0);
+					done = True;
+				} else {
+					current = NULL;
+					done = False;
+				}
+				
+			} else {
+				p_proc_ready = current;
+				// assert(p_proc_ready->p_flags == 0);
+				done = True;
+			}
+		}
+	}
+
+	if((done == False) && (Queue3.linked_PCB != NULL)){
+		current = Queue3.linked_PCB;
+		// assert(current->p_flags == 0);
+		if(current->p_flags != 0){
+			current = current->next_proc;
+		}
+
+		if(current != NULL)
+		{
+			if(current->ticks > 0){			//当前进程尚未运行完
+				p_proc_ready = current;
+				// assert(p_proc_ready->p_flags == 0);
+				done = True;
+			} else {
+				if(current->next_proc != NULL){		//如果已经运行完
+					Queue3.linked_PCB = current->next_proc;
+					current->already_run_for = 0;
+					current->next_proc = NULL;
+					init_schedule_queue();
+				}
+				// assert(p_proc_ready->p_flags == 0);
+				done = True;
+			}
+		} else {
+			init_schedule_queue();
+			// assert(p_proc_ready->p_flags == 0);
+			done = True;
+		}
+	}
+
+	if(block_schedule == 0){
+		if(p_temp->ticks > 0){
+			p_proc_ready = p_temp;
+			return;
+		}
+	}
+
+	int	greatest_ticks = 0;
+	
+	while (!greatest_ticks) {
+		for (p = &FIRST_PROC; p <= &LAST_PROC; p++) {
+			if (p->p_flags == 0) {
+				if (p->ticks > greatest_ticks) {
+					greatest_ticks = p->ticks;
+					p_proc_ready = p;
+				}
+			}
+		}
+
+		if (!greatest_ticks)
+			for (p = &FIRST_PROC; p <= &LAST_PROC; p++)
+				if (p->p_flags == 0)
+					p->ticks = p->priority;
+	}
+  	int all_done = True;
+
+	for(i = 0; i < NR_PROCS + NR_TASKS; i++){
+		proc_status_before[i] = proc_status_current[i];
+
+		if((proc_table[i].ticks > 0) && (proc_table[i].p_flags == 0)){
+			all_done = False;
+			// out_char(&(console_table[0]), ']');
+		}
+	}
+
+	if(all_done == True){
+		for(i = 0; i < NR_PROCS + NR_TASKS; i++){
+			if(proc_table[i].p_flags == 0){
+				// proc_table[i].ticks = proc_table[i].priority;
+				proc_table[i].already_run_for = 0;
+			}
+		}
+	}
+  }
+
+PUBLIC void rr_schedule()
 {
 	struct proc*	p;
 	int		greatest_ticks = 0;
@@ -49,7 +594,6 @@ PUBLIC void schedule()
 					p->ticks = p->priority;
 	}
 }
-
 /*****************************************************************************
  *                                sys_sendrec
  *****************************************************************************/
@@ -214,7 +758,9 @@ PUBLIC void reset_msg(MESSAGE* p)
 PRIVATE void block(struct proc* p)
 {
 	assert(p->p_flags);
-	schedule();
+	block_schedule = 1;
+	p_schedule[whichSchedule]();
+	block_schedule = 0;
 }
 
 /*****************************************************************************
@@ -357,7 +903,7 @@ PRIVATE int msg_send(struct proc* current, int dest, MESSAGE* m)
  *                                msg_receive
  *****************************************************************************/
 /**
- * <Ring 0> Try to get a message from the src proc. If src is blocked sending
+ * <Ring 0> Try to get a message from the src proc. If src is ed sending
  * the message, copy the message from it and unblock src. Otherwise the caller
  * will be blocked.
  * 

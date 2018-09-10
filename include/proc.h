@@ -4,7 +4,9 @@
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
                                                     Forrest Yu, 2005
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++*/
-
+PUBLIC void rr_schedule();
+PUBLIC void mrc_schedule();
+PUBLIC void mqs_schedule();
 
 struct stackframe {	/* proc_ptr points here				pr↑ Low			*/
 	u32	gs;		/* ┓						│			*/
@@ -63,6 +65,9 @@ struct proc {
 				    * queue (q_sending)
 				    */
 
+	struct proc * next_proc;	//就绪队列中的下一个进程
+	int already_run_for;		//该进程已经消耗的时间片
+
 	int nr_tty;
 };
 
@@ -77,6 +82,8 @@ struct task {
 /* Number of tasks & procs */
 #define NR_TASKS	6
 #define NR_PROCS	3
+#define NR_APROCQUEUE 1 //第一级用户进程队列中进程数量
+
 #define FIRST_PROC	proc_table[0]
 #define LAST_PROC	proc_table[NR_TASKS + NR_PROCS - 1]
 
